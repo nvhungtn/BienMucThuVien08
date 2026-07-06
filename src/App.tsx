@@ -386,7 +386,11 @@ export default function App() {
       }
     } catch (err: any) {
       console.error(err);
-      triggerMessage("error", `Không thể kết nối Google Sheets: ${err?.message || "Lỗi kết nối"}. Sách sẽ được lưu tạm tại trình duyệt.`);
+      if (err?.code === "auth/popup-blocked" || err?.message?.includes("popup-blocked")) {
+        triggerMessage("error", "Trình duyệt đã chặn cửa sổ đăng nhập Google. Vui lòng bấm vào biểu tượng chặn popup ở cuối thanh địa chỉ để 'Cho phép', hoặc mở ứng dụng trong tab mới bằng nút ở góc trên bên phải khung Preview.");
+      } else {
+        triggerMessage("error", `Không thể kết nối Google Sheets: ${err?.message || "Lỗi kết nối"}. Sách sẽ được lưu tạm tại trình duyệt.`);
+      }
     } finally {
       setIsLoggingIn(false);
     }
@@ -471,7 +475,11 @@ export default function App() {
       }
     } catch (err: any) {
       console.error(err);
-      triggerMessage("error", `Đăng nhập thất bại: ${err?.message || "Lỗi không xác định"}`);
+      if (err?.code === "auth/popup-blocked" || err?.message?.includes("popup-blocked")) {
+        triggerMessage("error", "Trình duyệt đã chặn cửa sổ đăng nhập Google. Vui lòng bấm vào biểu tượng chặn popup ở cuối thanh địa chỉ để 'Cho phép', hoặc mở ứng dụng trong tab mới bằng nút ở góc trên bên phải khung Preview.");
+      } else {
+        triggerMessage("error", `Đăng nhập thất bại: ${err?.message || "Lỗi không xác định"}`);
+      }
     } finally {
       setIsLoggingIn(false);
     }
