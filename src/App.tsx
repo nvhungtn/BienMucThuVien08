@@ -658,53 +658,102 @@ export default function App() {
     }
     setIsSearchingIsbn(true);
     setOpacSearchResult(null);
-    triggerMessage("info", "Đang tra cứu dữ liệu sách từ Thư viện Quốc gia...");
+    triggerMessage("info", "Đang tra cứu dữ liệu sách...");
     try {
       const apiBaseUrl = (import.meta as any).env?.VITE_API_BASE_URL || "";
-      const res = await fetch(`${apiBaseUrl}/api/search`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isbn: query.trim() })
-      });
-      
-      const text = await res.text();
-      let data: any = null;
-      try {
-        data = text ? JSON.parse(text) : {};
-      } catch (err) {
-        const isHtml = text.toLowerCase().includes("<html") || text.toLowerCase().includes("<!doctype");
-        if (isHtml) {
-          throw new Error("Phản hồi từ máy chủ không hợp lệ (Trang HTML). Vui lòng kiểm tra lại trạng thái đăng nhập hoặc tải lại trang.");
-        }
-        throw new Error(`Phản hồi không phải là JSON hợp lệ: ${text.substring(0, 50)}...`);
-      }
+      let bookData: any = null;
+      let marc21Data: any = null;
+      let usedFallback = false;
 
-      if (!res.ok) {
-        throw new Error(data?.error || "Không tìm thấy kết quả từ thư viện.");
+      try {
+        const res = await fetch(`${apiBaseUrl}/api/search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ isbn: query.trim() })
+        });
+        
+        const text = await res.text();
+        let data: any = null;
+        try {
+          data = text ? JSON.parse(text) : {};
+        } catch (err) {
+          const isHtml = text.toLowerCase().includes("<html") || text.toLowerCase().includes("<!doctype");
+          if (isHtml) {
+            throw new Error("Phản hồi từ máy chủ không hợp lệ (Trang HTML).");
+          }
+          throw new Error(`Phản hồi không phải là JSON: ${text.substring(0, 50)}...`);
+        }
+
+        if (!res.ok) {
+          throw new Error(data?.error || "Không tìm thấy kết quả từ thư viện.");
+        }
+        
+        if (data.success && data.book) {
+          bookData = data.book;
+          marc21Data = data.marc21;
+        } else {
+          throw new Error(data.error || "Không nhận diện được phản hồi từ dịch vụ tra cứu.");
+        }
+      } catch (backendError: any) {
+        console.warn("Backend ISBN lookup failed, trying client-side Google Books API fallback:", backendError.message);
+        usedFallback = true;
+        
+        const cleanedIsbn = query.replace(/[- ]/g, "").trim();
+        const gBooksRes = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${cleanedIsbn}`);
+        if (!gBooksRes.ok) {
+          throw new Error(`Không thể kết nối máy chủ tra cứu: ${backendError.message}`);
+        }
+        
+        const gBooksJson = await gBooksRes.json();
+        if (!gBooksJson.items || gBooksJson.items.length === 0) {
+          throw new Error(`Không tìm thấy cuốn sách có mã ISBN này trên thư viện quốc gia hoặc Google Books.`);
+        }
+        
+        const volumeInfo = gBooksJson.items[0].volumeInfo;
+        const authorName = volumeInfo.authors ? volumeInfo.authors.join(", ") : "Chưa rõ tác giả";
+        const barcodeVal = Math.floor(100000 + Math.random() * 900000).toString();
+        const firstLetter = authorName.trim().charAt(0).toUpperCase();
+        const cutterVal = `${firstLetter}${Math.floor(100 + Math.random() * 899)}c`;
+
+        bookData = {
+          isbn: formatIsbn(cleanedIsbn),
+          title: volumeInfo.title || "",
+          subTitle: volumeInfo.subtitle || "",
+          author: authorName,
+          publisher: volumeInfo.publisher || "Chưa rõ NXB",
+          pubYear: volumeInfo.publishedDate ? volumeInfo.publishedDate.substring(0, 4) : new Date().getFullYear().toString(),
+          pages: volumeInfo.pageCount ? String(volumeInfo.pageCount) : "",
+          summary: volumeInfo.description || "",
+          subjects: volumeInfo.categories || [],
+          ddc: "800",
+          cutter: cutterVal,
+          barcode: barcodeVal,
+          price: "0đ",
+          dimensions: "21cm",
+          language: volumeInfo.language === "vi" ? "vie" : (volumeInfo.language === "en" ? "eng" : "vie"),
+          quantity: "1"
+        };
+        marc21Data = null;
       }
       
-      if (data.success && data.book) {
-        const formattedBook = {
-          ...data.book,
-          isbn: formatIsbn(data.book.isbn)
-        };
-        setFormRecord({ ...emptyRecord, ...formattedBook });
-        setOpacSearchResult({ book: formattedBook, marc21: data.marc21 });
-        
-        // Populate raw MARC block view!
-        setRawMarcInput(generateMarc21Text(formattedBook));
-        
-        if (data.warning) {
-          triggerMessage("info", `[Chế độ dự phòng]: ${data.warning}`);
-        } else {
-          triggerMessage("success", `Đã tải thành công biên mục cuốn sách: "${data.book.title}"!`);
-        }
+      const formattedBook = {
+        ...bookData,
+        isbn: formatIsbn(bookData.isbn)
+      };
+      setFormRecord({ ...emptyRecord, ...formattedBook });
+      setOpacSearchResult({ book: formattedBook, marc21: marc21Data });
+      
+      // Populate raw MARC block view!
+      setRawMarcInput(generateMarc21Text(formattedBook));
+      
+      if (usedFallback) {
+        triggerMessage("info", `[Chế độ dự phòng]: Tìm thấy sách từ Google Books: "${formattedBook.title}"`);
       } else {
-        triggerMessage("error", data.error || "Không nhận diện được phản hồi từ dịch vụ tra cứu.");
+        triggerMessage("success", `Đã tải thành công biên mục cuốn sách: "${formattedBook.title}"!`);
       }
     } catch (err: any) {
       console.error(err);
-      triggerMessage("error", `Không tra cứu được thông tin: ${err?.message || "Lỗi kết nối máy chủ"}`);
+      triggerMessage("error", `Không tra cứu được thông tin: ${err?.message || "Lỗi kết nối"}`);
     } finally {
       setIsSearchingIsbn(false);
     }

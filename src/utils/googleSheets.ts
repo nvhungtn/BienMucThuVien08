@@ -108,15 +108,48 @@ async function handleResponseJson(response: Response, defaultErrorPrefix: string
 
 const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || "";
 
+// Helper to execute Google Sheets requests directly or via proxy
+async function executeSheetsRequest(
+  accessToken: string,
+  targetUrl: string,
+  method: string = "GET",
+  body: any = null
+): Promise<Response> {
+  const hasBackend = API_BASE_URL !== "" && API_BASE_URL !== window.location.origin;
+  
+  const url = hasBackend
+    ? `${API_BASE_URL}/api/sheets-proxy?url=${encodeURIComponent(targetUrl)}`
+    : targetUrl;
+
+  const headers: Record<string, string> = {};
+  if (hasBackend) {
+    headers["X-Sheets-Authorization"] = `Bearer ${accessToken}`;
+  } else {
+    headers["Authorization"] = `Bearer ${accessToken}`;
+  }
+
+  if (body) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  const fetchConfig: RequestInit = {
+    method,
+    headers
+  };
+
+  if (body && method !== "GET" && method !== "HEAD") {
+    fetchConfig.body = JSON.stringify(body);
+  }
+
+  return await fetch(url, fetchConfig);
+}
+
 // Check spreadsheet metadata and return sheet names
 export async function getSpreadsheetDetails(accessToken: string, customSpreadsheetId?: string): Promise<string[]> {
   const sId = customSpreadsheetId || SPREADSHEET_ID;
   const targetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${sId}`;
-  const url = `${API_BASE_URL}/api/sheets-proxy?url=${encodeURIComponent(targetUrl)}`;
-  const response = await fetch(url, {
-    headers: { "X-Sheets-Authorization": `Bearer ${accessToken}` }
-  });
-
+  
+  const response = await executeSheetsRequest(accessToken, targetUrl, "GET");
   const data = await handleResponseJson(response, "Lỗi khi kết nối Google Sheet");
   const sheets = data.sheets || [];
   return sheets.map((s: any) => s.properties?.title || "Sheet1");
@@ -127,11 +160,8 @@ export async function fetchSheetRecords(accessToken: string, sheetName: string, 
   const sId = customSpreadsheetId || SPREADSHEET_ID;
   const range = `${sheetName}!A:R`;
   const targetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${sId}/values/${encodeURIComponent(range)}`;
-  const url = `${API_BASE_URL}/api/sheets-proxy?url=${encodeURIComponent(targetUrl)}`;
-  const response = await fetch(url, {
-    headers: { "X-Sheets-Authorization": `Bearer ${accessToken}` }
-  });
-
+  
+  const response = await executeSheetsRequest(accessToken, targetUrl, "GET");
   const data = await handleResponseJson(response, "Lỗi khi lấy dữ liệu");
   const rows = data.values || [];
   if (rows.length === 0) return [];
@@ -154,21 +184,14 @@ export async function initializeSheetHeaders(accessToken: string, sheetName: str
   const sId = customSpreadsheetId || SPREADSHEET_ID;
   const range = `${sheetName}!A1:R1`;
   const targetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${sId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
-  const url = `${API_BASE_URL}/api/sheets-proxy?url=${encodeURIComponent(targetUrl)}`;
   
-  const response = await fetch(url, {
-    method: "PUT",
-    headers: {
-      "X-Sheets-Authorization": `Bearer ${accessToken}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      range,
-      majorDimension: "ROWS",
-      values: [SHEET_HEADERS]
-    })
-  });
-
+  const body = {
+    range,
+    majorDimension: "ROWS",
+    values: [SHEET_HEADERS]
+  };
+  
+  const response = await executeSheetsRequest(accessToken, targetUrl, "PUT", body);
   await handleResponseJson(response, "Lỗi khi khởi tạo tiêu đề");
 }
 
@@ -177,22 +200,15 @@ export async function appendSheetRecord(accessToken: string, sheetName: string, 
   const sId = customSpreadsheetId || SPREADSHEET_ID;
   const range = `${sheetName}!A:A`;
   const targetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${sId}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED`;
-  const url = `${API_BASE_URL}/api/sheets-proxy?url=${encodeURIComponent(targetUrl)}`;
 
   const row = recordToRow(record);
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "X-Sheets-Authorization": `Bearer ${accessToken}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      range,
-      majorDimension: "ROWS",
-      values: [row]
-    })
-  });
-
+  const body = {
+    range,
+    majorDimension: "ROWS",
+    values: [row]
+  };
+  
+  const response = await executeSheetsRequest(accessToken, targetUrl, "POST", body);
   await handleResponseJson(response, "Lỗi khi lưu dữ liệu");
 }
 
@@ -201,43 +217,28 @@ export async function appendMultipleSheetRecords(accessToken: string, sheetName:
   const sId = customSpreadsheetId || SPREADSHEET_ID;
   const range = `${sheetName}!A:A`;
   const targetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${sId}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED`;
-  const url = `${API_BASE_URL}/api/sheets-proxy?url=${encodeURIComponent(targetUrl)}`;
 
   const rows = records.map(r => recordToRow(r));
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "X-Sheets-Authorization": `Bearer ${accessToken}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      range,
-      majorDimension: "ROWS",
-      values: rows
-    })
-  });
-
+  const body = {
+    range,
+    majorDimension: "ROWS",
+    values: rows
+  };
+  
+  const response = await executeSheetsRequest(accessToken, targetUrl, "POST", body);
   await handleResponseJson(response, "Lỗi khi lưu nhiều dữ liệu");
 }
 
 // Create a completely new Spreadsheet
 export async function createNewSpreadsheet(accessToken: string, title: string): Promise<string> {
   const targetUrl = `https://sheets.googleapis.com/v4/spreadsheets`;
-  const url = `${API_BASE_URL}/api/sheets-proxy?url=${encodeURIComponent(targetUrl)}`;
+  const body = {
+    properties: {
+      title
+    }
+  };
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "X-Sheets-Authorization": `Bearer ${accessToken}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      properties: {
-        title
-      }
-    })
-  });
-
+  const response = await executeSheetsRequest(accessToken, targetUrl, "POST", body);
   const data = await handleResponseJson(response, "Lỗi khi tạo file Google Sheet mới");
   if (!data.spreadsheetId) {
     throw new Error("Không nhận được Spreadsheet ID từ phản hồi của Google API");
@@ -249,27 +250,19 @@ export async function createNewSpreadsheet(accessToken: string, title: string): 
 export async function createSheet(accessToken: string, sheetName: string, customSpreadsheetId?: string): Promise<void> {
   const sId = customSpreadsheetId || SPREADSHEET_ID;
   const targetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${sId}:batchUpdate`;
-  const url = `${API_BASE_URL}/api/sheets-proxy?url=${encodeURIComponent(targetUrl)}`;
-  
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "X-Sheets-Authorization": `Bearer ${accessToken}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      requests: [
-        {
-          addSheet: {
-            properties: {
-              title: sheetName
-            }
+  const body = {
+    requests: [
+      {
+        addSheet: {
+          properties: {
+            title: sheetName
           }
         }
-      ]
-    })
-  });
-
+      }
+    ]
+  };
+  
+  const response = await executeSheetsRequest(accessToken, targetUrl, "POST", body);
   await handleResponseJson(response, `Lỗi khi tạo trang tính ${sheetName}`);
 }
 
@@ -289,38 +282,23 @@ export async function overwriteSheetRecords(accessToken: string, sheetName: stri
   // 1. Clear everything from row 2 onwards to remove existing items
   const clearRange = `${sheetName}!A2:R100000`;
   const clearTargetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${sId}/values/${encodeURIComponent(clearRange)}:clear`;
-  const clearUrl = `${API_BASE_URL}/api/sheets-proxy?url=${encodeURIComponent(clearTargetUrl)}`;
   
-  const clearResponse = await fetch(clearUrl, {
-    method: "POST",
-    headers: {
-      "X-Sheets-Authorization": `Bearer ${accessToken}`,
-      "Content-Type": "application/json"
-    }
-  });
-  
+  const clearResponse = await executeSheetsRequest(accessToken, clearTargetUrl, "POST");
   await handleResponseJson(clearResponse, `Lỗi khi làm sạch dữ liệu cũ trên trang tính ${sheetName}`);
   
   // 2. If there are remaining records, write them
   if (records.length > 0) {
     const range = `${sheetName}!A2`;
     const updateTargetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${sId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
-    const updateUrl = `${API_BASE_URL}/api/sheets-proxy?url=${encodeURIComponent(updateTargetUrl)}`;
     
     const rows = records.map(r => recordToRow(r));
-    const updateResponse = await fetch(updateUrl, {
-      method: "PUT",
-      headers: {
-        "X-Sheets-Authorization": `Bearer ${accessToken}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        range,
-        majorDimension: "ROWS",
-        values: rows
-      })
-    });
+    const body = {
+      range,
+      majorDimension: "ROWS",
+      values: rows
+    };
     
+    const updateResponse = await executeSheetsRequest(accessToken, updateTargetUrl, "PUT", body);
     await handleResponseJson(updateResponse, `Lỗi khi đồng bộ dữ liệu mới sang trang tính ${sheetName}`);
   }
 }
