@@ -167,6 +167,7 @@ export default function App() {
   });
   const [needsAuth, setNeedsAuth] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [isCheckingRedirect, setIsCheckingRedirect] = useState(true);
 
   // Admin access control states
   const [isAdminMode, setIsAdminMode] = useState<boolean>(() => {
@@ -255,6 +256,9 @@ export default function App() {
       errorMsg.includes("expired");
 
     if (isAuthError) {
+      if (accessToken === "auto-backend-token") {
+        return false;
+      }
       setUser(null);
       setAccessToken("auto-backend-token"); // fallback to auto-backend-token instead of null
       setNeedsAuth(true);
@@ -361,6 +365,7 @@ export default function App() {
         triggerMessage("error", `Đăng nhập chuyển hướng thất bại: ${err?.message || "Lỗi không xác định"}`);
       } finally {
         setIsLoggingIn(false);
+        setIsCheckingRedirect(false);
       }
     };
     processRedirect();
@@ -424,6 +429,8 @@ export default function App() {
 
   // Automatically load records from Google Sheets when accessToken is available on load
   useEffect(() => {
+    if (isCheckingRedirect) return;
+
     if (accessToken) {
       const autoLoad = async () => {
         setIsLoadingSheets(true);
@@ -469,7 +476,7 @@ export default function App() {
         console.error(e);
       }
     }
-  }, [accessToken, currentSpreadsheetId]);
+  }, [accessToken, currentSpreadsheetId, isCheckingRedirect]);
 
   // Google Sign In
   const handleGoogleSignIn = async () => {
