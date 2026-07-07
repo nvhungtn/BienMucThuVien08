@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app";
-import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User, signOut } from "firebase/auth";
+import { getAuth, signInWithRedirect, getRedirectResult, GoogleAuthProvider, onAuthStateChanged, User, signOut } from "firebase/auth";
 import firebaseConfig from "../../firebase-applet-config.json";
 
 const app = initializeApp(firebaseConfig);
@@ -32,31 +32,45 @@ export const initAuth = (
       cachedAccessToken = null;
       if (typeof window !== "undefined") {
         localStorage.removeItem("google_access_token");
+        localStorage.removeItem("google_user");
       }
       if (onAuthFailure) onAuthFailure();
     }
   });
 };
 
-export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
+export const googleSignIn = async (): Promise<void> => {
   try {
     isSigningIn = true;
-    const result = await signInWithPopup(auth, provider);
-    const credential = GoogleAuthProvider.credentialFromResult(result);
-    if (!credential?.accessToken) {
-      throw new Error("Không thể lấy access token từ Google Sign-in");
-    }
-
-    cachedAccessToken = credential.accessToken;
-    if (typeof window !== "undefined") {
-      localStorage.setItem("google_access_token", cachedAccessToken);
-    }
-    return { user: result.user, accessToken: cachedAccessToken };
+    await signInWithRedirect(auth, provider);
   } catch (error: any) {
     console.error("Sign in error:", error);
     throw error;
   } finally {
     isSigningIn = false;
+  }
+};
+
+export const checkRedirectResult = async (): Promise<{ user: User; accessToken: string } | null> => {
+  try {
+    const result = await getRedirectResult(auth);
+    if (result) {
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (!credential?.accessToken) {
+        throw new Error("Không thể lấy access token từ Google Sign-in");
+      }
+
+      cachedAccessToken = credential.accessToken;
+      if (typeof window !== "undefined") {
+        localStorage.setItem("google_access_token", cachedAccessToken);
+        localStorage.setItem("google_user", JSON.stringify(result.user));
+      }
+      return { user: result.user, accessToken: cachedAccessToken };
+    }
+    return null;
+  } catch (error: any) {
+    console.error("Error getting redirect result:", error);
+    throw error;
   }
 };
 
@@ -69,5 +83,6 @@ export const logout = async () => {
   cachedAccessToken = null;
   if (typeof window !== "undefined") {
     localStorage.removeItem("google_access_token");
+    localStorage.removeItem("google_user");
   }
 };

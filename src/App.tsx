@@ -40,7 +40,8 @@ import { formatDateTimeGMT7 } from "./utils/dateFormatter";
 import { 
   initAuth, 
   googleSignIn, 
-  logout 
+  logout,
+  checkRedirectResult
 } from "./utils/firebaseAuth";
 import { 
   SPREADSHEET_ID, 
@@ -327,6 +328,44 @@ export default function App() {
     }
   };
 
+  // Handle Google OAuth Redirect on load
+  useEffect(() => {
+    const processRedirect = async () => {
+      try {
+        const result = await checkRedirectResult();
+        if (result) {
+          setIsLoggingIn(true);
+          setUser(result.user);
+          setAccessToken(result.accessToken);
+          setNeedsAuth(false);
+          localStorage.setItem("google_user", JSON.stringify(result.user));
+          localStorage.setItem("google_access_token", result.accessToken);
+          triggerMessage("success", `Chào mừng ${result.user.displayName || "Thủ thư"}! Đã đồng bộ tài khoản Google thành công.`);
+          
+          // Auto-sync existing local records to Google Sheet on successful redirect
+          const localRecords = (() => {
+            try {
+              const saved = localStorage.getItem("cataloged_records");
+              return saved ? JSON.parse(saved) : [];
+            } catch (e) {
+              return [];
+            }
+          })();
+          if (localRecords.length > 0) {
+            triggerMessage("info", "Đang tự động đồng bộ dữ liệu local lên Google Sheets...");
+            await syncRecordsToGoogleSheets(result.accessToken, localRecords);
+          }
+        }
+      } catch (err: any) {
+        console.error("Lỗi xử lý chuyển hướng Google Auth:", err);
+        triggerMessage("error", `Đăng nhập chuyển hướng thất bại: ${err?.message || "Lỗi không xác định"}`);
+      } finally {
+        setIsLoggingIn(false);
+      }
+    };
+    processRedirect();
+  }, []);
+
   // Trigger auto background sync of local records to Google Sheet on load
   useEffect(() => {
     const triggerSyncOnLoad = async () => {
@@ -373,25 +412,11 @@ export default function App() {
     if (accessToken) return accessToken;
     setIsLoggingIn(true);
     try {
-      triggerMessage("info", "Đang tự động liên kết tài khoản Google để đồng bộ...");
-      const result = await googleSignIn();
-      if (result) {
-        setUser(result.user);
-        setAccessToken(result.accessToken);
-        setNeedsAuth(false);
-        localStorage.setItem("google_user", JSON.stringify(result.user));
-        localStorage.setItem("google_access_token", result.accessToken);
-        triggerMessage("success", `Chào mừng ${result.user.displayName || "Thủ thư"}! Đã tự động kết nối Google Sheets.`);
-        return result.accessToken;
-      }
+      triggerMessage("info", "Đang chuyển hướng sang trang đăng nhập Google để đồng bộ...");
+      await googleSignIn();
     } catch (err: any) {
       console.error(err);
-      if (err?.code === "auth/popup-blocked" || err?.message?.includes("popup-blocked")) {
-        triggerMessage("error", "Trình duyệt đã chặn cửa sổ đăng nhập Google. Vui lòng bấm vào biểu tượng chặn popup ở cuối thanh địa chỉ để 'Cho phép', hoặc mở ứng dụng trong tab mới bằng nút ở góc trên bên phải khung Preview.");
-      } else {
-        triggerMessage("error", `Không thể kết nối Google Sheets: ${err?.message || "Lỗi kết nối"}. Sách sẽ được lưu tạm tại trình duyệt.`);
-      }
-    } finally {
+      triggerMessage("error", `Không thể kết nối Google Sheets: ${err?.message || "Lỗi kết nối"}. Sách sẽ được lưu tạm tại trình duyệt.`);
       setIsLoggingIn(false);
     }
     return null;
@@ -450,37 +475,11 @@ export default function App() {
   const handleGoogleSignIn = async () => {
     setIsLoggingIn(true);
     try {
-      const result = await googleSignIn();
-      if (result) {
-        setUser(result.user);
-        setAccessToken(result.accessToken);
-        setNeedsAuth(false);
-        localStorage.setItem("google_user", JSON.stringify(result.user));
-        localStorage.setItem("google_access_token", result.accessToken);
-        triggerMessage("success", `Chào mừng ${result.user.displayName || "Thủ thư"}! Đã kết nối Google Sheets.`);
-        
-        // Auto-sync existing local records to Google Sheet
-        const localRecords = (() => {
-          try {
-            const saved = localStorage.getItem("cataloged_records");
-            return saved ? JSON.parse(saved) : [];
-          } catch (e) {
-            return [];
-          }
-        })();
-        if (localRecords.length > 0) {
-          triggerMessage("info", "Đang tự động đồng bộ dữ liệu local lên Google Sheets...");
-          await syncRecordsToGoogleSheets(result.accessToken, localRecords);
-        }
-      }
+      triggerMessage("info", "Đang chuyển hướng đến Google để đăng nhập...");
+      await googleSignIn();
     } catch (err: any) {
       console.error(err);
-      if (err?.code === "auth/popup-blocked" || err?.message?.includes("popup-blocked")) {
-        triggerMessage("error", "Trình duyệt đã chặn cửa sổ đăng nhập Google. Vui lòng bấm vào biểu tượng chặn popup ở cuối thanh địa chỉ để 'Cho phép', hoặc mở ứng dụng trong tab mới bằng nút ở góc trên bên phải khung Preview.");
-      } else {
-        triggerMessage("error", `Đăng nhập thất bại: ${err?.message || "Lỗi không xác định"}`);
-      }
-    } finally {
+      triggerMessage("error", `Đăng nhập thất bại: ${err?.message || "Lỗi không xác định"}`);
       setIsLoggingIn(false);
     }
   };
