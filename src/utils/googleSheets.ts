@@ -106,7 +106,20 @@ async function handleResponseJson(response: Response, defaultErrorPrefix: string
   return data;
 }
 
-const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || "";
+export function getApiBaseUrl(): string {
+  const envUrl = (import.meta as any).env?.VITE_API_BASE_URL;
+  if (envUrl) return envUrl;
+
+  if (typeof window !== "undefined") {
+    const origin = window.location.origin;
+    // If running on Vercel, localhost, or any other client host that is not Cloud Run,
+    // route API calls to the Cloud Run backend where the Express app is running.
+    if (origin.includes(".vercel.app") || origin.includes("localhost") || !origin.includes(".run.app")) {
+      return "https://ais-pre-2hiaiyxfsj43t7m65jfi6g-961037961593.asia-east1.run.app";
+    }
+  }
+  return "";
+}
 
 // Helper to execute Google Sheets requests directly or via proxy
 async function executeSheetsRequest(
@@ -115,10 +128,11 @@ async function executeSheetsRequest(
   method: string = "GET",
   body: any = null
 ): Promise<Response> {
+  const apiBaseUrl = getApiBaseUrl();
   // Always route through the backend proxy. This avoids CORS blocks in browser frames
   // and allows the proxy to transparently use the service account for "auto-backend-token".
-  const url = API_BASE_URL
-    ? `${API_BASE_URL}/api/sheets-proxy?url=${encodeURIComponent(targetUrl)}`
+  const url = apiBaseUrl
+    ? `${apiBaseUrl}/api/sheets-proxy?url=${encodeURIComponent(targetUrl)}`
     : `/api/sheets-proxy?url=${encodeURIComponent(targetUrl)}`;
 
   const headers: Record<string, string> = {};

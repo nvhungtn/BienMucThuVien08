@@ -52,7 +52,8 @@ import {
   appendMultipleSheetRecords,
   ensureBienMucSheet,
   createNewSpreadsheet,
-  overwriteSheetRecords
+  overwriteSheetRecords,
+  getApiBaseUrl
 } from "./utils/googleSheets";
 import { 
   EXCEL_COLUMNS, 
@@ -674,7 +675,7 @@ export default function App() {
     setOpacSearchResult(null);
     triggerMessage("info", "Đang tra cứu dữ liệu sách...");
     try {
-      const apiBaseUrl = (import.meta as any).env?.VITE_API_BASE_URL || "";
+      const apiBaseUrl = getApiBaseUrl();
       let bookData: any = null;
       let marc21Data: any = null;
       let usedFallback = false;
