@@ -256,13 +256,13 @@ export default function App() {
 
     if (isAuthError) {
       setUser(null);
-      setAccessToken(null);
+      setAccessToken("auto-backend-token"); // fallback to auto-backend-token instead of null
       setNeedsAuth(true);
       if (typeof window !== "undefined") {
         localStorage.removeItem("google_user");
         localStorage.removeItem("google_access_token");
       }
-      triggerMessage("error", "Phiên kết nối Google Sheets đã hết hạn. Vui lòng kết nối lại tài khoản.");
+      triggerMessage("error", "Phiên kết nối Google Sheets đã hết hạn hoặc không hợp lệ. Đã chuyển về chế độ tài khoản hệ thống.");
       return true;
     }
     return false;

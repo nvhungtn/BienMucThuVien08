@@ -115,18 +115,14 @@ async function executeSheetsRequest(
   method: string = "GET",
   body: any = null
 ): Promise<Response> {
-  const hasBackend = API_BASE_URL !== "" && API_BASE_URL !== window.location.origin;
-  
-  const url = hasBackend
+  // Always route through the backend proxy. This avoids CORS blocks in browser frames
+  // and allows the proxy to transparently use the service account for "auto-backend-token".
+  const url = API_BASE_URL
     ? `${API_BASE_URL}/api/sheets-proxy?url=${encodeURIComponent(targetUrl)}`
-    : targetUrl;
+    : `/api/sheets-proxy?url=${encodeURIComponent(targetUrl)}`;
 
   const headers: Record<string, string> = {};
-  if (hasBackend) {
-    headers["X-Sheets-Authorization"] = `Bearer ${accessToken}`;
-  } else {
-    headers["Authorization"] = `Bearer ${accessToken}`;
-  }
+  headers["Authorization"] = `Bearer ${accessToken}`;
 
   if (body) {
     headers["Content-Type"] = "application/json";
