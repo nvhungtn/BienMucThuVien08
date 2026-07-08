@@ -82,6 +82,16 @@ app.use(cors());
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json());
 
+// Get system service account email
+app.get("/api/service-account-email", async (req, res) => {
+  try {
+    const email = await getServiceAccountEmail();
+    res.json({ email });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Google Sheets API Server-side Proxy to bypass client-side iframe CORS restrictions
 app.all("/api/sheets-proxy", async (req, res) => {
   const targetUrl = req.query.url as string;

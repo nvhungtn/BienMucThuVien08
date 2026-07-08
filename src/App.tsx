@@ -43,6 +43,12 @@ import {
   logout,
   checkRedirectResult
 } from "./utils/firebaseAuth";
+import {
+  getBooksFromFirestore,
+  saveBookToFirestore,
+  deleteBookFromFirestore,
+  bulkSaveBooksToFirestore
+} from "./utils/firebaseDb";
 import { 
   SPREADSHEET_ID, 
   getSpreadsheetDetails, 
@@ -230,6 +236,24 @@ export default function App() {
   const [selectedSheet, setSelectedSheet] = useState<string>("BienMuc");
   const [isLoadingSheets, setIsLoadingSheets] = useState(false);
   const [syncStatus, setSyncStatus] = useState<{ type: "idle" | "success" | "error"; message: string }>({ type: "idle", message: "" });
+  const [serviceAccountEmail, setServiceAccountEmail] = useState<string>("email-he-thong@example.com");
+
+  useEffect(() => {
+    const fetchEmail = async () => {
+      try {
+        const response = await fetch("/api/service-account-email");
+        if (response.ok) {
+          const data = await response.json();
+          if (data.email) {
+            setServiceAccountEmail(data.email);
+          }
+        }
+      } catch (e) {
+        console.error("Failed to fetch service account email:", e);
+      }
+    };
+    fetchEmail();
+  }, []);
   
   // UI helper states
   const [importErrors, setImportErrors] = useState<string[]>([]);
@@ -435,55 +459,49 @@ export default function App() {
     return null;
   };
 
-  // Automatically load records from Google Sheets when accessToken is available on load
+  // Automatically load records from Firestore on startup as primary database
   useEffect(() => {
     if (isCheckingRedirect) return;
 
-    if (accessToken) {
-      const autoLoad = async () => {
-        setIsLoadingSheets(true);
-        try {
-          await ensureBienMucSheet(accessToken, currentSpreadsheetId);
-          const sheetRecords = await fetchSheetRecords(accessToken, "BienMuc", currentSpreadsheetId);
-          
-          // Sort records from newest to oldest
-          const sorted = [...sheetRecords].sort((a, b) => parseDateGMT7(b.createdAt) - parseDateGMT7(a.createdAt));
-          
-          setRecords(sorted);
-          localStorage.setItem("cataloged_records", JSON.stringify(sorted));
-          triggerMessage("success", `Tự động nạp thành công ${sorted.length} bản ghi biên mục từ Google Sheets!`);
-        } catch (err: any) {
-          console.warn("Auto load failed:", err);
-          checkAndHandleAuthError(err);
-          // Fallback to local storage if Google Sheet read fails
-          try {
-            const saved = localStorage.getItem("cataloged_records");
-            if (saved) {
-              const local = JSON.parse(saved);
-              const sorted = [...local].sort((a, b) => parseDateGMT7(b.createdAt) - parseDateGMT7(a.createdAt));
-              setRecords(sorted);
-            }
-          } catch (e) {
-            console.error(e);
-          }
-        } finally {
-          setIsLoadingSheets(false);
-        }
-      };
-      autoLoad();
-    } else {
-      // If offline/not connected, load local storage sorted newest to oldest
+    const loadFromFirestore = async () => {
+      setIsLoadingSheets(true);
       try {
-        const saved = localStorage.getItem("cataloged_records");
-        if (saved) {
-          const local = JSON.parse(saved);
-          const sorted = [...local].sort((a, b) => parseDateGMT7(b.createdAt) - parseDateGMT7(a.createdAt));
-          setRecords(sorted);
+        const firestoreRecords = await getBooksFromFirestore();
+        // Sort records from newest to oldest
+        const sorted = [...firestoreRecords].sort((a, b) => parseDateGMT7(b.createdAt) - parseDateGMT7(a.createdAt));
+        
+        setRecords(sorted);
+        localStorage.setItem("cataloged_records", JSON.stringify(sorted));
+        triggerMessage("success", `Đã tải thành công ${sorted.length} bản ghi sách từ cơ sở dữ liệu Firestore chính!`);
+
+        // Perform automatic background synchronization to Google Sheets using backend account
+        const syncToken = accessToken || "auto-backend-token";
+        try {
+          await ensureBienMucSheet(syncToken, currentSpreadsheetId);
+          // Sync existing records to Sheets to make sure they are up-to-date
+          await overwriteSheetRecords(syncToken, "BienMuc", sorted, currentSpreadsheetId);
+          console.log("Auto-synced Firestore database to Google Sheets successfully.");
+        } catch (syncErr: any) {
+          console.warn("Background startup sync to Google Sheets failed:", syncErr);
         }
-      } catch (e) {
-        console.error(e);
+      } catch (err: any) {
+        console.warn("Firestore database load failed, falling back to local storage:", err);
+        // Fallback to local storage if Firestore fails
+        try {
+          const saved = localStorage.getItem("cataloged_records");
+          if (saved) {
+            const local = JSON.parse(saved);
+            const sorted = [...local].sort((a, b) => parseDateGMT7(b.createdAt) - parseDateGMT7(a.createdAt));
+            setRecords(sorted);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      } finally {
+        setIsLoadingSheets(false);
       }
-    }
+    };
+    loadFromFirestore();
   }, [accessToken, currentSpreadsheetId, isCheckingRedirect]);
 
   // Google Sign In
@@ -1051,12 +1069,15 @@ export default function App() {
   const executeSaveRecord = async (recordToSave: BookRecord, isEdit: boolean) => {
     setIsSaving(true);
     try {
+      // 1. Save to Firestore (Primary Database)
+      const savedRecord = await saveBookToFirestore(recordToSave);
+
       // Correctly update local records list depending on edit vs add
       let updatedRecords: BookRecord[];
       if (isEdit) {
-        updatedRecords = records.map(r => r.id === recordToSave.id ? recordToSave : r);
+        updatedRecords = records.map(r => r.id === savedRecord.id ? savedRecord : r);
       } else {
-        updatedRecords = [recordToSave, ...records];
+        updatedRecords = [savedRecord, ...records];
       }
 
       // Sort records from newest to oldest
@@ -1066,37 +1087,30 @@ export default function App() {
       setFormRecord({ ...emptyRecord });
       setRawMarcInput("");
 
-      // Try syncing immediately if online and connected
-      const isOnline = typeof navigator !== "undefined" ? navigator.onLine : true;
-      if (accessToken && isOnline) {
-        try {
-          const cleanRecords = updatedRecords.map(r => {
-            const { unsynced: dummy, ...rest } = r;
-            return rest as BookRecord;
-          });
-          await ensureBienMucSheet(accessToken, currentSpreadsheetId);
-          await overwriteSheetRecords(accessToken, "BienMuc", cleanRecords, currentSpreadsheetId);
+      // 2. Automatically sync to Google Sheets using backend system credentials
+      const syncToken = accessToken || "auto-backend-token";
+      try {
+        const cleanRecords = updatedRecords.map(r => {
+          const { unsynced: dummy, ...rest } = r;
+          return rest as BookRecord;
+        });
+        await ensureBienMucSheet(syncToken, currentSpreadsheetId);
+        await overwriteSheetRecords(syncToken, "BienMuc", cleanRecords, currentSpreadsheetId);
 
-          const fullySyncedRecords = updatedRecords.map(r => ({ ...r, unsynced: false }));
-          setRecords(fullySyncedRecords);
-          localStorage.setItem("cataloged_records", JSON.stringify(fullySyncedRecords));
-          triggerMessage("success", isEdit ? "Đã cập nhật bản ghi thành công và đồng bộ sang Google Sheets!" : "Đã biên mục bản ghi mới thành công và đồng bộ sang Google Sheets!");
-        } catch (syncErr: any) {
-          console.warn("Direct sync failed, saving locally as unsynced:", syncErr);
-          const unsyncedRecords = updatedRecords.map(r => r.id === recordToSave.id ? { ...r, unsynced: true } : r);
-          setRecords(unsyncedRecords);
-          localStorage.setItem("cataloged_records", JSON.stringify(unsyncedRecords));
-          triggerMessage("success", "Đã lưu tạm tại máy tính (Chờ đồng bộ) do mất kết nối Google Sheets.");
-        }
-      } else {
-        const unsyncedRecords = updatedRecords.map(r => r.id === recordToSave.id ? { ...r, unsynced: true } : r);
-        setRecords(unsyncedRecords);
-        localStorage.setItem("cataloged_records", JSON.stringify(unsyncedRecords));
-        triggerMessage("success", "Đang ngoại tuyến. Đã lưu tạm tại máy tính, hệ thống sẽ tự động đồng bộ khi có mạng.");
+        const fullySyncedRecords = updatedRecords.map(r => ({ ...r, unsynced: false }));
+        setRecords(fullySyncedRecords);
+        localStorage.setItem("cataloged_records", JSON.stringify(fullySyncedRecords));
+        triggerMessage("success", isEdit ? "Đã cập nhật bản ghi thành công trên Firestore và đồng bộ sang Google Sheets!" : "Đã biên mục bản ghi mới thành công trên Firestore và đồng bộ sang Google Sheets!");
+      } catch (syncErr: any) {
+        console.warn("Direct Google Sheets sync failed, but document is safe in Firestore:", syncErr);
+        const fullySyncedRecords = updatedRecords.map(r => ({ ...r, unsynced: false }));
+        setRecords(fullySyncedRecords);
+        localStorage.setItem("cataloged_records", JSON.stringify(fullySyncedRecords));
+        triggerMessage("success", isEdit ? "Đã cập nhật sách thành công vào Firestore! (Tạm thời gặp sự cố đồng bộ Google Sheets)" : "Đã biên mục sách thành công vào Firestore! (Tạm thời gặp sự cố đồng bộ Google Sheets)");
       }
     } catch (err: any) {
       console.error(err);
-      triggerMessage("error", `Lỗi khi lưu bản ghi: ${err?.message}`);
+      triggerMessage("error", `Lỗi khi lưu bản ghi vào Firestore: ${err?.message}`);
     } finally {
       setIsSaving(false);
     }
@@ -1108,21 +1122,34 @@ export default function App() {
     if (!file) return;
 
     setExcelFile(file);
+    setIsLoadingSheets(true);
     try {
       const result = await parseExcelFile(file);
       setImportErrors(result.errors);
 
       if (result.records.length > 0) {
+        triggerMessage("info", `Đang nhập và lưu ${result.records.length} bản ghi vào cơ sở dữ liệu Firestore...`);
+        
+        // Save each record to Firestore and get the saved record with Firestore ID
+        const savedRecords: BookRecord[] = [];
+        for (const record of result.records) {
+          const saved = await saveBookToFirestore(record);
+          savedRecords.push(saved);
+        }
+
         // Add to local list of records
-        const updatedRecords = [...result.records, ...records];
+        const updatedRecords = [...savedRecords, ...records];
         setRecords(updatedRecords);
         localStorage.setItem("cataloged_records", JSON.stringify(updatedRecords));
 
-        if (accessToken) {
-          triggerMessage("info", `Đang tự động đồng bộ ${result.records.length} bản ghi sang Google Sheets...`);
-          await syncRecordsToGoogleSheets(accessToken, result.records);
-        } else {
-          triggerMessage("success", `Đã nhập thành công ${result.records.length} bản ghi từ file Excel vào bộ lưu trữ local!`);
+        // Automatically sync to Google Sheets via system account or user session
+        const syncToken = accessToken || "auto-backend-token";
+        try {
+          await syncRecordsToGoogleSheets(syncToken, savedRecords);
+          triggerMessage("success", `Nhập thành công ${result.records.length} bản ghi từ file Excel sang Firestore và đồng bộ sang Google Sheets!`);
+        } catch (syncErr: any) {
+          console.warn("Google Sheets sync failed for Excel imports:", syncErr);
+          triggerMessage("success", `Đã lưu thành công ${result.records.length} bản ghi vào Firestore! (Gặp sự cố đồng bộ tạm thời với Google Sheets)`);
         }
       } else {
         triggerMessage("error", "Không tìm thấy bản ghi hợp lệ nào trong file Excel.");
@@ -1130,6 +1157,8 @@ export default function App() {
     } catch (err: any) {
       console.error(err);
       triggerMessage("error", `Lỗi tải file: ${err?.message}`);
+    } finally {
+      setIsLoadingSheets(false);
     }
 
     // Reset input file value
@@ -1152,36 +1181,38 @@ export default function App() {
   const handleDeleteRecord = async (id: string | undefined) => {
     if (!id) return;
 
-    const confirmMessage = accessToken
-      ? "Bạn có chắc chắn muốn xóa bản ghi này? (Bản ghi tương ứng trên Google Sheets của bạn cũng sẽ được xóa đồng bộ)"
-      : "Bạn có chắc chắn muốn xóa bản ghi này khỏi danh sách phiên làm việc hiện tại không?";
+    const confirmMessage = "Bạn có chắc chắn muốn xóa bản ghi này? (Bản ghi tương ứng trên Firestore và Google Sheets sẽ được xóa đồng bộ)";
 
     if (window.confirm(confirmMessage)) {
-      const updatedRecords = records.filter(r => r.id !== id);
-      setRecords(updatedRecords);
-      localStorage.setItem("cataloged_records", JSON.stringify(updatedRecords));
+      setIsLoadingSheets(true);
+      try {
+        // 1. Delete from Firestore (Primary Database)
+        await deleteBookFromFirestore(id);
 
-      if (selectedRecordForMarc?.id === id) {
-        setSelectedRecordForMarc(null);
-      }
+        // Update local list
+        const updatedRecords = records.filter(r => r.id !== id);
+        setRecords(updatedRecords);
+        localStorage.setItem("cataloged_records", JSON.stringify(updatedRecords));
 
-      if (accessToken) {
-        setIsLoadingSheets(true);
-        try {
-          await ensureBienMucSheet(accessToken, currentSpreadsheetId);
-          await overwriteSheetRecords(accessToken, "BienMuc", updatedRecords, currentSpreadsheetId);
-          triggerMessage("success", "Đã xóa bản ghi thành công và đồng bộ cập nhật lên Google Sheets!");
-        } catch (err: any) {
-          console.error(err);
-          const wasAuthError = checkAndHandleAuthError(err);
-          if (!wasAuthError) {
-            triggerMessage("error", `Đã xóa cục bộ nhưng không thể đồng bộ xóa lên Google Sheets: ${err?.message}`);
-          }
-        } finally {
-          setIsLoadingSheets(false);
+        if (selectedRecordForMarc?.id === id) {
+          setSelectedRecordForMarc(null);
         }
-      } else {
-        triggerMessage("success", "Đã xóa bản ghi thành công khỏi danh sách cục bộ.");
+
+        // 2. Sync deletion to Google Sheets via system account or user session
+        const syncToken = accessToken || "auto-backend-token";
+        try {
+          await ensureBienMucSheet(syncToken, currentSpreadsheetId);
+          await overwriteSheetRecords(syncToken, "BienMuc", updatedRecords, currentSpreadsheetId);
+          triggerMessage("success", "Đã xóa bản ghi thành công trên Firestore và đồng bộ cập nhật lên Google Sheets!");
+        } catch (syncErr: any) {
+          console.warn("Sync deletion to Google Sheets failed:", syncErr);
+          triggerMessage("success", "Đã xóa bản ghi thành công trên Firestore! (Đồng bộ xóa Google Sheets tạm thời gặp lỗi)");
+        }
+      } catch (err: any) {
+        console.error("Firestore deletion failed:", err);
+        triggerMessage("error", `Không thể xóa bản ghi trên Firestore: ${err?.message}`);
+      } finally {
+        setIsLoadingSheets(false);
       }
     }
   };
@@ -2087,10 +2118,15 @@ export default function App() {
                 ) : (
                   <div className="space-y-0.5 text-left">
                     <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Đang liên kết bằng:</p>
-                    <p className="font-semibold text-slate-600 dark:text-slate-400 text-[11px] flex items-center gap-1">
-                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500"></span>
-                      Hệ thống tự động (Yêu cầu chia sẻ Sheet cho email hệ thống)
-                    </p>
+                    <div className="font-semibold text-slate-600 dark:text-slate-400 text-[11px] flex flex-col gap-0.5">
+                      <div className="flex items-center gap-1 font-bold">
+                        <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+                        Tài khoản hệ thống (Backend Service Account)
+                      </div>
+                      <code className="text-[10px] font-mono bg-slate-100 dark:bg-slate-900 px-1.5 py-0.5 rounded text-slate-700 dark:text-slate-300 break-all select-all border border-slate-200 dark:border-slate-800">
+                        {serviceAccountEmail}
+                      </code>
+                    </div>
                   </div>
                 )}
                 
