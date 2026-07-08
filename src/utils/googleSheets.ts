@@ -109,15 +109,6 @@ async function handleResponseJson(response: Response, defaultErrorPrefix: string
 export function getApiBaseUrl(): string {
   const envUrl = (import.meta as any).env?.VITE_API_BASE_URL;
   if (envUrl) return envUrl;
-
-  if (typeof window !== "undefined") {
-    const origin = window.location.origin;
-    // If running on Vercel, localhost, or any other client host that is not Cloud Run,
-    // route API calls to the Cloud Run backend where the Express app is running.
-    if (origin.includes(".vercel.app") || origin.includes("localhost") || !origin.includes(".run.app")) {
-      return "https://ais-pre-2hiaiyxfsj43t7m65jfi6g-961037961593.asia-east1.run.app";
-    }
-  }
   return "";
 }
 
