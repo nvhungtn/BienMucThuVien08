@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app";
-import { getAuth, signInWithRedirect, getRedirectResult, GoogleAuthProvider, onAuthStateChanged, User, signOut } from "firebase/auth";
+import { getAuth, signInWithRedirect, signInWithPopup, getRedirectResult, GoogleAuthProvider, onAuthStateChanged, User, signOut } from "firebase/auth";
 import firebaseConfig from "../../firebase-applet-config.json";
 
 const app = initializeApp(firebaseConfig);
@@ -39,10 +39,26 @@ export const initAuth = (
   });
 };
 
-export const googleSignIn = async (): Promise<void> => {
+export const googleSignIn = async (usePopup = true): Promise<{ user: User; accessToken: string } | null> => {
   try {
     isSigningIn = true;
-    await signInWithRedirect(auth, provider);
+    if (usePopup) {
+      const result = await signInWithPopup(auth, provider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (!credential?.accessToken) {
+        throw new Error("Không thể lấy access token từ Google Sign-in");
+      }
+
+      cachedAccessToken = credential.accessToken;
+      if (typeof window !== "undefined") {
+        localStorage.setItem("google_access_token", cachedAccessToken);
+        localStorage.setItem("google_user", JSON.stringify(result.user));
+      }
+      return { user: result.user, accessToken: cachedAccessToken };
+    } else {
+      await signInWithRedirect(auth, provider);
+      return null;
+    }
   } catch (error: any) {
     console.error("Sign in error:", error);
     throw error;

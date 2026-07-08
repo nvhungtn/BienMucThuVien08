@@ -215,8 +215,15 @@ export default function App() {
   // Memoized Admin Checker - Catalog management is now completely free and open for everyone
   const isUserAdmin = true;
   
-  // Google Sheets states - Locked to the provided Sheet ID as per requirements
-  const [currentSpreadsheetId, setCurrentSpreadsheetId] = useState<string>(SPREADSHEET_ID);
+  // Google Sheets states - Saved in local storage to support custom spreadsheets
+  const [currentSpreadsheetId, setCurrentSpreadsheetId] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem("google_spreadsheet_id");
+      return saved || SPREADSHEET_ID;
+    } catch {
+      return SPREADSHEET_ID;
+    }
+  });
   const [isEditingSheetId, setIsEditingSheetId] = useState(false);
   const [sheetIdInput, setSheetIdInput] = useState(currentSpreadsheetId);
   const [sheetTabs, setSheetTabs] = useState<string[]>([]);
@@ -483,11 +490,38 @@ export default function App() {
   const handleGoogleSignIn = async () => {
     setIsLoggingIn(true);
     try {
-      triggerMessage("info", "Đang chuyển hướng đến Google để đăng nhập...");
-      await googleSignIn();
+      triggerMessage("info", "Đang kết nối tài khoản Google...");
+      const result = await googleSignIn(true); // Try popup first
+      if (result) {
+        setUser(result.user);
+        setAccessToken(result.accessToken);
+        setNeedsAuth(false);
+        triggerMessage("success", `Chào mừng ${result.user.displayName || "Thủ thư"}! Đã kết nối tài khoản Google thành công.`);
+        
+        // Auto-sync existing local records to Google Sheet on successful login
+        const localRecords = (() => {
+          try {
+            const saved = localStorage.getItem("cataloged_records");
+            return saved ? JSON.parse(saved) : [];
+          } catch (e) {
+            return [];
+          }
+        })();
+        if (localRecords.length > 0) {
+          triggerMessage("info", "Đang tự động đồng bộ dữ liệu ngoại tuyến lên Google Sheets...");
+          await syncRecordsToGoogleSheets(result.accessToken, localRecords);
+        }
+      }
     } catch (err: any) {
-      console.error(err);
-      triggerMessage("error", `Đăng nhập thất bại: ${err?.message || "Lỗi không xác định"}`);
+      console.warn("Popup sign-in failed or blocked, falling back to redirect...", err);
+      try {
+        triggerMessage("info", "Trình duyệt chặn cửa sổ đăng nhập. Đang chuyển hướng sang trang đăng nhập Google...");
+        await googleSignIn(false); // Fallback to redirect
+      } catch (redirectErr: any) {
+        console.error("Redirect login error:", redirectErr);
+        triggerMessage("error", `Đăng nhập thất bại: ${redirectErr?.message || "Lỗi không xác định"}`);
+      }
+    } finally {
       setIsLoggingIn(false);
     }
   };
@@ -508,6 +542,100 @@ export default function App() {
         console.error(err);
       }
     }
+  };
+
+  // Create a completely new personal spreadsheet
+  const handleCreateNewSpreadsheet = async () => {
+    if (!accessToken || accessToken === "auto-backend-token") {
+      triggerMessage("error", "Vui lòng kết nối tài khoản Google cá nhân của bạn trước.");
+      return;
+    }
+    
+    setIsLoadingSheets(true);
+    try {
+      triggerMessage("info", "Đang khởi tạo Trang tính Google mới trong Google Drive của bạn...");
+      const title = `Thư Viện Số - Biên Mục Chuẩn DDC/MARC21 (${formatDateTimeGMT7(new Date()).split(" ")[0]})`;
+      const newSheetId = await createNewSpreadsheet(accessToken, title);
+      
+      triggerMessage("info", "Đang cấu hình tiêu đề và cấu trúc dữ liệu chuẩn...");
+      await ensureBienMucSheet(accessToken, newSheetId);
+      
+      // Update local storage and current states
+      setCurrentSpreadsheetId(newSheetId);
+      setSheetIdInput(newSheetId);
+      localStorage.setItem("google_spreadsheet_id", newSheetId);
+      
+      triggerMessage("success", "Đã tạo thành công Trang tính mới! Tất cả sách mới sẽ được lưu tại đây.");
+      
+      // Sync local records to this new Sheet
+      const localRecords = (() => {
+        try {
+          const saved = localStorage.getItem("cataloged_records");
+          return saved ? JSON.parse(saved) : [];
+        } catch (e) {
+          return [];
+        }
+      })();
+      if (localRecords.length > 0) {
+        triggerMessage("info", "Đang đồng bộ dữ liệu hiện có sang Trang tính mới...");
+        await syncRecordsToGoogleSheets(accessToken, localRecords);
+      }
+    } catch (err: any) {
+      console.error("Create spreadsheet failed:", err);
+      triggerMessage("error", `Không thể tạo Trang tính mới: ${err?.message || "Lỗi không xác định"}`);
+    } finally {
+      setIsLoadingSheets(false);
+    }
+  };
+
+  // Save custom Spreadsheet ID manually
+  const handleSaveSpreadsheetId = async (customId: string) => {
+    const cleaned = (customId || "").trim();
+    if (!cleaned) {
+      triggerMessage("error", "Vui lòng nhập ID Trang tính hợp lệ.");
+      return;
+    }
+    
+    // Extract ID from full URL if they paste the URL
+    // e.g. https://docs.google.com/spreadsheets/d/1CxNsLi1GPoOmsK1uBIuQgewpSBAFKvNl_0thEOEJJ9k/edit
+    let targetId = cleaned;
+    const urlPattern = /\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/;
+    const match = cleaned.match(urlPattern);
+    if (match && match[1]) {
+      targetId = match[1];
+    }
+    
+    setIsLoadingSheets(true);
+    try {
+      if (accessToken && accessToken !== "auto-backend-token") {
+        triggerMessage("info", "Đang kiểm tra quyền truy cập Trang tính...");
+        await getSpreadsheetDetails(accessToken, targetId);
+      }
+      
+      setCurrentSpreadsheetId(targetId);
+      setSheetIdInput(targetId);
+      localStorage.setItem("google_spreadsheet_id", targetId);
+      setIsEditingSheetId(false);
+      triggerMessage("success", `Đã kết nối thành công với Trang tính ID: ${targetId}`);
+    } catch (err: any) {
+      console.error("Access check failed:", err);
+      // Still allow saving but show warning
+      setCurrentSpreadsheetId(targetId);
+      setSheetIdInput(targetId);
+      localStorage.setItem("google_spreadsheet_id", targetId);
+      setIsEditingSheetId(false);
+      triggerMessage("info", `Đã cấu hình Trang tính mới. Lưu ý: ${err?.message || "Không thể kiểm tra quyền truy cập"}`);
+    } finally {
+      setIsLoadingSheets(false);
+    }
+  };
+
+  const handleResetSpreadsheetId = () => {
+    setCurrentSpreadsheetId(SPREADSHEET_ID);
+    setSheetIdInput(SPREADSHEET_ID);
+    localStorage.removeItem("google_spreadsheet_id");
+    setIsEditingSheetId(false);
+    triggerMessage("success", "Đã đặt lại về Trang tính mặc định của hệ thống.");
   };
 
   // Load spreadsheet tabs/sheets
@@ -1856,11 +1984,11 @@ export default function App() {
             </h2>
 
             {/* Google Sheets Lock Status Panel */}
-            <div className="bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/60 text-emerald-800 dark:text-emerald-300 rounded-xl p-4 text-xs space-y-3 shadow-2xs">
+            <div className="bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/60 text-emerald-800 dark:text-emerald-300 rounded-xl p-4 text-xs space-y-4 shadow-2xs">
               <div className="flex items-center justify-between font-bold">
                 <div className="flex items-center">
                   <CheckCircle className="h-4 w-4 mr-1.5 text-emerald-600 dark:text-emerald-400" />
-                  <span>Đồng bộ đám mây tự động</span>
+                  <span>Đồng bộ đám mây tự động (Google Sheets)</span>
                 </div>
                 {accessToken && accessToken !== "auto-backend-token" ? (
                   <span className="bg-emerald-100 dark:bg-emerald-900/50 text-emerald-800 dark:text-emerald-200 text-[10px] px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800 font-bold">
@@ -1872,16 +2000,87 @@ export default function App() {
                   </span>
                 )}
               </div>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                Tất cả dữ liệu biên mục được đồng bộ hóa trực tiếp thời gian thực sang Google Sheets ID: <code className="bg-emerald-100 dark:bg-emerald-950/60 px-1.5 py-0.5 rounded font-mono font-bold text-[10px] text-emerald-950 dark:text-emerald-300">1CxNsLi1GPoOmsK1uBIuQgewpSBAFKvNl_0thEOEJJ9k</code>.
-              </p>
+
+              <div className="space-y-2">
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                  Trang tính đang kết nối có ID: <code className="bg-emerald-100 dark:bg-emerald-950/60 px-1.5 py-0.5 rounded font-mono font-bold text-[10px] text-emerald-950 dark:text-emerald-300 break-all">{currentSpreadsheetId}</code>
+                </p>
+                
+                {/* Advanced Sheet Settings Control */}
+                {isEditingSheetId ? (
+                  <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-3 space-y-2.5">
+                    <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase">
+                      Nhập mã Google Sheet ID hoặc dán liên kết URL:
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={sheetIdInput}
+                        onChange={(e) => setSheetIdInput(e.target.value)}
+                        placeholder="Ví dụ: 1CxNsLi1GPoOmsK1uBIuQgew..."
+                        className="flex-1 bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 px-2.5 py-1.5 rounded text-xs text-slate-800 dark:text-slate-100 font-mono"
+                      />
+                      <button
+                        onClick={() => handleSaveSpreadsheetId(sheetIdInput)}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded text-xs font-bold transition-all"
+                      >
+                        Kết nối
+                      </button>
+                    </div>
+                    <div className="flex justify-between items-center text-[10px] text-slate-400">
+                      <span>Nhấp 'Đặt lại' để về tệp hệ thống mặc định</span>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={handleResetSpreadsheetId}
+                          className="text-amber-600 hover:underline font-bold"
+                        >
+                          Đặt lại mặc định
+                        </button>
+                        <span>•</span>
+                        <button
+                          onClick={() => {
+                            setIsEditingSheetId(false);
+                            setSheetIdInput(currentSpreadsheetId);
+                          }}
+                          className="text-slate-500 hover:underline font-bold"
+                        >
+                          Hủy
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <button
+                      onClick={() => setIsEditingSheetId(true)}
+                      className="text-emerald-600 dark:text-emerald-400 hover:underline font-semibold flex items-center gap-1 text-[11px]"
+                    >
+                      <Pencil className="h-3 w-3" />
+                      Thay đổi mã Google Sheet
+                    </button>
+                    
+                    {accessToken && accessToken !== "auto-backend-token" && (
+                      <>
+                        <span className="text-slate-300">|</span>
+                        <button
+                          onClick={handleCreateNewSpreadsheet}
+                          className="text-blue-600 dark:text-blue-400 hover:underline font-semibold flex items-center gap-1 text-[11px]"
+                        >
+                          <Plus className="h-3 w-3" />
+                          Tạo nhanh Trang tính mới trong Drive của bạn
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
               
-              <div className="pt-2 border-t border-emerald-200/50 dark:border-emerald-800/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+              <div className="pt-3 border-t border-emerald-200/50 dark:border-emerald-800/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                 {accessToken && accessToken !== "auto-backend-token" ? (
                   <div className="space-y-0.5 text-left">
                     <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Đang liên kết bằng:</p>
                     <p className="font-semibold text-slate-700 dark:text-slate-300 text-[11px] flex items-center gap-1">
-                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
+                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
                       {user?.displayName || "Thủ thư"} ({user?.email || "Cá nhân"})
                     </p>
                   </div>
@@ -1899,7 +2098,7 @@ export default function App() {
                   {accessToken && accessToken !== "auto-backend-token" ? (
                     <button
                       onClick={handleGoogleSignOut}
-                      className="w-full sm:w-auto bg-white hover:bg-red-50 border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:text-red-600 dark:hover:text-red-400 hover:border-red-200 dark:hover:border-red-900/50 px-2.5 py-1 rounded text-[11px] font-bold transition-all cursor-pointer shadow-3xs"
+                      className="w-full sm:w-auto bg-white hover:bg-red-50 border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:text-red-600 dark:hover:text-red-400 hover:border-red-200 dark:hover:border-red-900/50 px-3 py-1.5 rounded text-[11px] font-bold transition-all cursor-pointer shadow-3xs"
                     >
                       Ngắt kết nối Google
                     </button>
@@ -1907,7 +2106,7 @@ export default function App() {
                     <button
                       onClick={handleGoogleSignIn}
                       disabled={isLoggingIn}
-                      className="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white border border-emerald-700 px-2.5 py-1 rounded text-[11px] font-bold transition-all cursor-pointer shadow-xs disabled:opacity-50 flex items-center justify-center gap-1"
+                      className="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white border border-emerald-700 px-3 py-1.5 rounded text-[11px] font-bold transition-all cursor-pointer shadow-xs disabled:opacity-50 flex items-center justify-center gap-1"
                     >
                       {isLoggingIn ? (
                         <>
@@ -1915,7 +2114,7 @@ export default function App() {
                           Đang kết nối...
                         </>
                       ) : (
-                        "Đăng nhập tài khoản Google của bạn"
+                        "Đăng nhập tài khoản Google"
                       )}
                     </button>
                   )}
