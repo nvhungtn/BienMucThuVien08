@@ -1,6 +1,5 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
-import puppeteer, { Browser, ElementHandle } from "puppeteer";
 import logger from "../utils/logger";
 import { isValidIsbn, cleanIsbn } from "../utils/isbnValidator";
 import isbn3 from "isbn3";
@@ -178,13 +177,16 @@ export async function searchOpacByIsbn(isbn: string): Promise<{ book: BookData; 
 
   logger.info(`Bắt đầu quy trình tra cứu ISBN bằng Puppeteer cho: ${cleaned}. Các định dạng thử nghiệm tại TVQG VN: ${searchTerms.join(", ")}`);
   
-  if (process.env.DISABLE_PUPPETEER === "true") {
-    logger.info(`Puppeteer đã bị tắt theo cấu hình (DISABLE_PUPPETEER=true) cho ISBN: ${cleaned}`);
+  if (process.env.VERCEL || process.env.DISABLE_PUPPETEER === "true") {
+    logger.info(`Puppeteer đã bị tắt tự động (môi trường Vercel hoặc cấu hình DISABLE_PUPPETEER=true) cho ISBN: ${cleaned}`);
     return null;
   }
   
-  let browser: Browser | null = null;
+  let browser: any = null;
   try {
+    const puppeteerModule = await import("puppeteer");
+    const puppeteer = (puppeteerModule.default || puppeteerModule) as any;
+
     if (process.env.PUPPETEER_WS_ENDPOINT) {
       logger.info(`Đang kết nối tới trình duyệt từ xa qua WebSocket: ${process.env.PUPPETEER_WS_ENDPOINT}`);
       browser = await puppeteer.connect({
@@ -260,7 +262,7 @@ export async function searchOpacByIsbn(isbn: string): Promise<{ book: BookData; 
     });
 
     if (filterBtn) {
-      await (filterBtn as ElementHandle).click();
+      await (filterBtn as any).click();
       await delay(500);
     } else {
       throw new Error("Không tìm thấy nút chọn trường tìm kiếm `#quick-filter`.");
@@ -301,11 +303,11 @@ export async function searchOpacByIsbn(isbn: string): Promise<{ book: BookData; 
       const term = searchTerms[i];
       logger.info(`Nhập mã ISBN ${term} vào thanh tìm kiếm (Lượt ${i + 1}/${searchTerms.length})...`);
       
-      await (targetInput as ElementHandle).focus();
+      await (targetInput as any).focus();
       await page.evaluate((el) => {
         (el as HTMLInputElement).value = "";
       }, targetInput);
-      await (targetInput as ElementHandle).type(term);
+      await (targetInput as any).type(term);
 
       logger.info(`Gửi yêu cầu tìm kiếm cho mã ISBN: ${term}`);
       await page.keyboard.press("Enter");
